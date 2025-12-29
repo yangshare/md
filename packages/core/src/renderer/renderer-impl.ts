@@ -3,7 +3,7 @@ import type { RendererObject, Tokens } from 'marked'
 import type { ReadTimeResults } from 'reading-time'
 import frontMatter from 'front-matter'
 import hljs from 'highlight.js/lib/core'
-import { marked } from 'marked'
+import { Marked, marked } from 'marked'
 import readingTime from 'reading-time'
 import { markedAlert, markedFootnotes, markedMarkup, markedPlantUML, markedRuby, markedSlider, markedToc, MDKatex } from '../extensions'
 import { COMMON_LANGUAGES, highlightAndFormatCode } from '../utils/languages'
@@ -383,5 +383,258 @@ export function initRenderer(opts: IOpts = {}): RendererAPI {
       return styledContent(`container`, content, `section`)
     },
     getOpts,
+  }
+}
+
+export function initRendererServer(opts: IOpts = {}): RendererAPI & { parse: (md: string) => string } {
+  const instance = new Marked()
+  instance.setOptions({
+    breaks: true,
+  })
+
+  const footnotes: [number, string, string][] = []
+  let footnoteIndex: number = 0
+  const listOrderedStack: boolean[] = []
+  const listCounters: number[] = []
+
+  function getOpts(): IOpts {
+    return opts
+  }
+
+  function styledContent(styleLabel: string, content: string, tagName?: string): string {
+    const tag = tagName ?? styleLabel
+    const className = `${styleLabel.replace(/_/g, `-`)}`
+    const headingAttr = /^h\d$/.test(tag) ? ` data-heading="true"` : ``
+    return `<${tag} class="${className}"${headingAttr}>${content}</${tag}>`
+  }
+
+  function addFootnote(title: string, link: string): number {
+    const existingFootnote = footnotes.find(([, , existingLink]) => existingLink === link)
+    if (existingFootnote) {
+      return existingFootnote[0]
+    }
+    footnotes.push([++footnoteIndex, title, link])
+    return footnoteIndex
+  }
+
+  function reset(newOpts: Partial<IOpts>): void {
+    footnotes.length = 0
+    footnoteIndex = 0
+    setOptions(newOpts)
+  }
+
+  function setOptions(newOpts: Partial<IOpts>): void {
+    opts = { ...opts, ...newOpts }
+    instance.use(markedAlert())
+    instance.use(MDKatex({ nonStandard: true }, true))
+    instance.use(markedMarkup())
+  }
+
+  function buildReadingTime(readingTime: ReadTimeResults): string {
+    if (!opts.countStatus) {
+      return ``
+    }
+    if (!readingTime.words) {
+      return ``
+    }
+    return `
+      <blockquote class="md-blockquote">
+        <p class="md-blockquote-p">字数 ${readingTime?.words}，阅读大约需 ${Math.ceil(readingTime?.minutes)} 分钟</p>
+      </blockquote>
+    `
+  }
+
+  const buildFootnotes = () => {
+    if (!footnotes.length) {
+      return ``
+    }
+
+    return (
+      styledContent(`h4`, `引用链接`)
+      + styledContent(`footnotes`, buildFootnoteArray(footnotes), `p`)
+    )
+  }
+
+  const renderer: RendererObject = {
+    heading({ tokens, depth }: Tokens.Heading) {
+      const text = this.parser.parseInline(tokens)
+      const tag = `h${depth}`
+      return styledContent(tag, text)
+    },
+
+    paragraph({ tokens }: Tokens.Paragraph): string {
+      const text = this.parser.parseInline(tokens)
+      const isFigureImage = text.includes(`<figure`) && text.includes(`<img`)
+      const isEmpty = text.trim() === ``
+      if (isFigureImage || isEmpty) {
+        return text
+      }
+      return styledContent(`p`, text)
+    },
+
+    blockquote({ tokens }: Tokens.Blockquote): string {
+      const text = this.parser.parse(tokens)
+      return styledContent(`blockquote`, text)
+    },
+
+    code({ text, lang = `` }: Tokens.Code): string {
+      if (lang.startsWith(`mermaid`)) {
+        return `<pre class="mermaid">${text}</pre>`
+      }
+      const langText = lang.split(` `)[0]
+      const isLanguageRegistered = hljs.getLanguage(langText)
+      const language = isLanguageRegistered ? langText : `plaintext`
+
+      const highlighted = highlightAndFormatCode(text, language, hljs, !!opts.isShowLineNumber)
+
+      const span = `<span class="mac-sign" style="padding: 10px 14px 0;">${macCodeSvg}</span>`
+      let pendingAttr = ``
+      if (!isLanguageRegistered && langText !== `plaintext`) {
+        const escapedText = text.replace(/"/g, `&quot;`)
+        pendingAttr = ` data-language-pending="${langText}" data-raw-code="${escapedText}" data-show-line-number="${opts.isShowLineNumber}"`
+      }
+      const code = `<code class="language-${lang}"${pendingAttr}>${highlighted}</code>`
+
+      return `<pre class="hljs code__pre">${span}${code}</pre>`
+    },
+
+    codespan({ text }: Tokens.Codespan): string {
+      const escapedText = escapeHtml(text)
+      return styledContent(`codespan`, escapedText, `code`)
+    },
+
+    list({ ordered, items, start = 1 }: Tokens.List) {
+      listOrderedStack.push(ordered)
+      listCounters.push(Number(start))
+
+      const html = items
+        .map(item => this.listitem(item))
+        .join(``)
+
+      listOrderedStack.pop()
+      listCounters.pop()
+
+      return styledContent(
+        ordered ? `ol` : `ul`,
+        html,
+      )
+    },
+
+    listitem(token: Tokens.ListItem) {
+      const ordered = listOrderedStack[listOrderedStack.length - 1]
+      const idx = listCounters[listCounters.length - 1]!
+
+      listCounters[listCounters.length - 1] = idx + 1
+
+      const prefix = ordered
+        ? `${idx}. `
+        : `• `
+
+      let content: string
+      try {
+        content = this.parser.parseInline(token.tokens)
+      }
+      catch {
+        content = this.parser
+          .parse(token.tokens)
+          .replace(/^<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/, `$1`)
+      }
+
+      return styledContent(
+        `listitem`,
+        `${prefix}${content}`,
+        `li`,
+      )
+    },
+
+    image({ href, title, text }: Tokens.Image): string {
+      const newText = opts.legend ? transform(opts.legend, text, title) : ``
+      const subText = newText ? styledContent(`figcaption`, newText) : ``
+      const titleAttr = title ? ` title="${title}"` : ``
+      return `<figure><img src="${href}"${titleAttr} alt="${text}"/>${subText}</figure>`
+    },
+
+    link({ href, title, text, tokens }: Tokens.Link): string {
+      const parsedText = this.parser.parseInline(tokens)
+      if (/^https?:\/\/mp\.weixin\.qq\.com/.test(href)) {
+        return `<a href="${href}" title="${title || text}">${parsedText}</a>`
+      }
+      if (href === text) {
+        return parsedText
+      }
+      if (opts.citeStatus) {
+        const ref = addFootnote(title || text, href)
+        return `<a href="${href}" title="${title || text}">${parsedText}<sup>[${ref}]</sup></a>`
+      }
+      return `<a href="${href}" title="${title || text}">${parsedText}</a>`
+    },
+
+    strong({ tokens }: Tokens.Strong): string {
+      return styledContent(`strong`, this.parser.parseInline(tokens))
+    },
+
+    em({ tokens }: Tokens.Em): string {
+      return styledContent(`em`, this.parser.parseInline(tokens))
+    },
+
+    table({ header, rows }: Tokens.Table): string {
+      const headerRow = header
+        .map((cell) => {
+          const text = this.parser.parseInline(cell.tokens)
+          return styledContent(`th`, text)
+        })
+        .join(``)
+      const body = rows
+        .map((row) => {
+          const rowContent = row
+            .map(cell => this.tablecell(cell))
+            .join(``)
+          return styledContent(`tr`, rowContent)
+        })
+        .join(``)
+      return `
+        <section style="max-width: 100%; overflow: auto">
+          <table class="preview-table">
+            <thead>${headerRow}</thead>
+            <tbody>${body}</tbody>
+          </table>
+        </section>
+      `
+    },
+
+    tablecell(token: Tokens.TableCell): string {
+      const text = this.parser.parseInline(token.tokens)
+      return styledContent(`td`, text)
+    },
+
+    hr(_: Tokens.Hr): string {
+      return styledContent(`hr`, ``)
+    },
+  }
+
+  instance.use({ renderer })
+  instance.use(markedMarkup())
+  instance.use(markedToc())
+  instance.use(markedSlider())
+  instance.use(markedAlert({}))
+  instance.use(MDKatex({ nonStandard: true }, true))
+  instance.use(markedFootnotes())
+  instance.use(markedPlantUML({
+    inlineSvg: true,
+  }))
+  instance.use(markedRuby())
+
+  return {
+    buildAddition,
+    buildFootnotes,
+    setOptions,
+    reset,
+    parseFrontMatterAndContent,
+    buildReadingTime,
+    createContainer(content: string) {
+      return styledContent(`container`, content, `section`)
+    },
+    getOpts,
+    parse: (md: string) => instance.parse(md) as string,
   }
 }

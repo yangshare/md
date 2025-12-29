@@ -1,7 +1,8 @@
 import type { EditorView } from '@codemirror/view'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView as CMEditorView } from '@codemirror/view'
-import { cssSetup, DEFAULT_CUSTOM_THEME, theme as editorTheme } from '@md/shared'
+import { cssSetup, theme as editorTheme } from '@md/shared'
+import { DEFAULT_CUSTOM_THEME } from '@md/shared/assets'
 import { addPrefix } from '@/utils'
 import { store } from '@/utils/storage'
 

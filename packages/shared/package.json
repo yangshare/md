@@ -5,6 +5,8 @@
   "private": true,
   "exports": {
     ".": "./src/index.ts",
+    "./server": "./src/server.ts",
+    "./assets": "./src/assets/index.ts",
     "./configs": "./src/configs/index.ts",
     "./configs/*": "./src/configs/*.ts",
     "./constants": "./src/constants/index.ts",

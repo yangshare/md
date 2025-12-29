@@ -5,6 +5,9 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { createProxyMiddleware } from 'http-proxy-middleware'
+import { initRendererServer } from '@md/core/renderer'
+import { renderMarkdownServer, postProcessHtml } from '@md/core/utils'
+import { baseCSSContent, themeMap } from '@md/shared/server'
 import {
   dcloud,
   parseArgv,
@@ -84,6 +87,42 @@ export function createServer(port = 8800) {
       res.json({ url })
     } catch (error) {
       console.error('Upload error:', error)
+      res.status(500).json({ error: error.message })
+    }
+  })
+
+  // Markdown 渲染 API
+  app.post('/api/render', async (req, res) => {
+    try {
+      const { content, theme = 'default' } = req.body
+
+      if (!content) {
+        return res.status(400).json({ error: 'Content is required' })
+      }
+
+      // 1. 初始化渲染器
+      const renderer = initRendererServer({
+        countStatus: true,
+        isShowLineNumber: true,
+        isMacCodeBlock: true,
+      })
+
+      // 2. 渲染 Markdown
+      const { html, readingTime } = renderMarkdownServer(content, renderer)
+
+      // 3. 后处理
+      let finalHtml = postProcessHtml(html, readingTime, renderer)
+
+      // 4. 注入 CSS 样式
+      const themeCss = themeMap[theme] || themeMap.default
+      const fullCss = baseCSSContent + '\n' + themeCss
+      
+      finalHtml = `<style>${fullCss}</style>\n<div class="md-content">${finalHtml}</div>`
+
+      res.json({ html: finalHtml })
+    }
+    catch (error) {
+      console.error('Render error:', error)
       res.status(500).json({ error: error.message })
     }
   })

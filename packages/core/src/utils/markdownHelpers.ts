@@ -76,3 +76,20 @@ export function modifyHtmlContent(content: string, renderer: RendererAPI): strin
   })
   return postProcessHtml(html, readingTimeResult, renderer)
 }
+
+/**
+ * 渲染 Markdown 内容 (服务端)
+ * @param raw - 原始 markdown 字符串
+ * @param renderer - 渲染器 API (必须包含 parse 方法)
+ * @returns 渲染结果，包含 HTML 和阅读时间
+ */
+export function renderMarkdownServer(raw: string, renderer: RendererAPI & { parse: (md: string) => string }) {
+  const { markdownContent, readingTime } = renderer.parseFrontMatterAndContent(raw)
+
+  let html = renderer.parse(markdownContent)
+
+  // XSS 处理
+  html = DOMPurify.sanitize(html, { ADD_TAGS: [`mp-common-profile`] })
+
+  return { html, readingTime }
+}

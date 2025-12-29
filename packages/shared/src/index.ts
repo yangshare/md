@@ -1,4 +1,3 @@
-export * from './assets'
 export * from './configs'
 export * from './constants'
 export * from './editor'
