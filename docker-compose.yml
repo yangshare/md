@@ -1,0 +1,8 @@
+version: '3'
+services:
+  md-cli:
+    build: .
+    container_name: md-cli
+    ports:
+      - '8800:8800'
+    restart: always
